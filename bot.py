@@ -88,12 +88,28 @@ def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS or len(ADMIN_IDS) == 0
 
+async def check_bot_permissions(channel_id, permission_type="source"):
+    """Check if bot is admin in the channel"""
+    try:
+        channel = await bot.get_entity(channel_id)
+        me = await bot.get_me()
+        participant = await bot.get_permissions(channel, me)
+        
+        if not participant.is_admin:
+            return False, f"❌ Bot is not admin in {permission_type} channel!\n\n⚠️ Please make the bot an admin in the channel."
+        
+        return True, "✅ Bot has admin permissions"
+    except Exception as e:
+        return False, f"❌ Error checking permissions: {str(e)}"
+
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     """Handle /start command"""
     if not is_admin(event.sender_id):
         await event.respond("⛔ You are not authorized to use this bot.")
         return
+    
+    session = get_session(event.sender_id)
     
     buttons = [
         [Button.inline("📤 Set Source Channel", b"set_source")],
@@ -103,10 +119,20 @@ async def start_handler(event):
         [Button.inline("ℹ️ Help", b"help")]
     ]
     
+    # Show preset values if available
+    preset_info = ""
+    if session.source_channel or session.target_channel:
+        preset_info = "\n**📋 Saved Configuration:**\n"
+        if session.source_channel:
+            preset_info += f"📤 Source: `{session.source_channel}`\n"
+        if session.target_channel:
+            preset_info += f"📥 Target: `{session.target_channel}`\n"
+    
     await event.respond(
         "**🤖 Telegram Forwarder Bot**\n\n"
-        "Welcome! I can forward messages from one channel to another.\n\n"
-        "Choose an option below to get started:",
+        "Welcome! I can forward messages from one channel to another."
+        f"{preset_info}\n"
+        "Choose an option below:",
         buttons=buttons
     )
 
@@ -167,7 +193,8 @@ async def show_modes(event):
         return
     
     buttons = [
-        [Button.inline("🔴 Live Mode", b"mode_live")],
+        [Button.inline("🔴 Live Mode (Auto-forward new)", b"mode_live")],
+        [Button.inline("📦 Send ALL Files & Messages", b"mode_send_all")],
         [Button.inline("📝 Forward Range", b"mode_range")],
         [Button.inline("🔢 Forward Till Message", b"mode_till_msg")],
         [Button.inline("📁 Forward Till File", b"mode_till_file")],
@@ -179,11 +206,12 @@ async def show_modes(event):
     
     await event.edit(
         f"**⚙️ Forwarding Modes**\n\n"
-        f"Current Mode: {current_mode}\n"
-        f"Source: `{session.source_channel}`\n"
-        f"Target: `{session.target_channel}`\n"
-        f"Forwarded: {session.forward_count} messages\n\n"
-        f"Select a mode:",
+        f"📋 **Saved Configuration:**\n"
+        f"📤 Source: `{session.source_channel}`\n"
+        f"📥 Target: `{session.target_channel}`\n"
+        f"📊 Forwarded: {session.forward_count} messages\n"
+        f"⚡ Current Mode: {current_mode}\n\n"
+        f"**Select a mode:**",
         buttons=buttons
     )
 
@@ -202,6 +230,75 @@ async def mode_live(event):
         "The forwarded tag will be removed.",
         buttons=buttons
     )
+
+@bot.on(events.CallbackQuery(pattern=b"mode_send_all"))
+async def mode_send_all(event):
+    """Send all files and messages from source to target"""
+    session = get_session(event.sender_id)
+    
+    await event.answer("⏳ Starting...")
+    buttons = [[Button.inline("🔙 Back to Modes", b"modes")]]
+    await event.edit(
+        "**📦 Sending ALL Files & Messages**\n\n"
+        "⏳ Fetching all messages from source channel...\n"
+        "This may take a while depending on channel size.",
+        buttons=buttons
+    )
+    
+    session.mode = 'idle'
+    await forward_all_messages(event.sender_id)
+
+async def forward_all_messages(user_id):
+    """Forward all messages from source to target"""
+    session = get_session(user_id)
+    
+    try:
+        source = await bot.get_entity(session.source_channel)
+        target = await bot.get_entity(session.target_channel)
+        
+        forwarded = 0
+        failed = 0
+        
+        await bot.send_message(user_id, "📤 Starting to forward all messages...")
+        
+        async for message in bot.iter_messages(source, reverse=True):
+            try:
+                # Copy message without forward tag
+                await bot.send_message(
+                    target,
+                    message.text or message.message or "",
+                    file=message.media,
+                    buttons=message.buttons,
+                    formatting_entities=message.entities
+                )
+                forwarded += 1
+                session.forward_count += 1
+                
+                # Status update every 50 messages
+                if forwarded % 50 == 0:
+                    await bot.send_message(user_id, f"⏳ Progress: {forwarded} messages forwarded...")
+                    await asyncio.sleep(1)  # Prevent flood
+                    
+            except FloodWaitError as e:
+                logger.warning(f"Flood wait: {e.seconds} seconds")
+                await bot.send_message(user_id, f"⏸️ Rate limited. Waiting {e.seconds} seconds...")
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                logger.error(f"Error forwarding message: {e}")
+                failed += 1
+                continue
+        
+        save_session(user_id)
+        await bot.send_message(
+            user_id, 
+            f"✅ **Completed!**\n\n"
+            f"📊 Forwarded: {forwarded} messages\n"
+            f"❌ Failed: {failed} messages"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in forward_all_messages: {e}")
+        await bot.send_message(user_id, f"❌ Error: {str(e)}")
 
 @bot.on(events.CallbackQuery(pattern=b"mode_range"))
 async def mode_range(event):
@@ -326,11 +423,20 @@ async def message_handler(event):
                 channel_input = int(channel_input)
             
             entity = await bot.get_entity(channel_input)
-            session.source_channel = entity.id if hasattr(entity, 'id') else channel_input
+            channel_id = entity.id if hasattr(entity, 'id') else channel_input
+            
+            # Check if bot is admin
+            is_admin_perm, msg = await check_bot_permissions(channel_id, "source")
+            if not is_admin_perm:
+                await event.respond(msg)
+                session.mode = 'idle'
+                return
+            
+            session.source_channel = channel_id
             save_session(event.sender_id)
             session.mode = 'idle'
             
-            await event.respond(f"✅ Source channel set: `{session.source_channel}`")
+            await event.respond(f"✅ Source channel set: `{session.source_channel}`\n{msg}")
         except Exception as e:
             await event.respond(f"❌ Error: {str(e)}\nPlease try again.")
         return
@@ -348,11 +454,20 @@ async def message_handler(event):
                 channel_input = int(channel_input)
             
             entity = await bot.get_entity(channel_input)
-            session.target_channel = entity.id if hasattr(entity, 'id') else channel_input
+            channel_id = entity.id if hasattr(entity, 'id') else channel_input
+            
+            # Check if bot is admin
+            is_admin_perm, msg = await check_bot_permissions(channel_id, "target")
+            if not is_admin_perm:
+                await event.respond(msg)
+                session.mode = 'idle'
+                return
+            
+            session.target_channel = channel_id
             save_session(event.sender_id)
             session.mode = 'idle'
             
-            await event.respond(f"✅ Target channel set: `{session.target_channel}`")
+            await event.respond(f"✅ Target channel set: `{session.target_channel}`\n{msg}")
         except Exception as e:
             await event.respond(f"❌ Error: {str(e)}\nPlease try again.")
         return
