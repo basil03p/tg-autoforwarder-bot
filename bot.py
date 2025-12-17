@@ -417,13 +417,13 @@ async def forward_all_messages(user_id):
                 
             try:
                 # Copy message without forward tag
-                if message.file:
-                    # Use message.file which works directly with send_file
+                if message.media:
+                    # Use message.media directly for proper media handling
                     await bot.send_file(
                         target,
-                        message.file,
+                        message.media,
                         caption=message.text or "",
-                        force_document=message.document is not None
+                        force_document=getattr(message, 'document', None) is not None
                     )
                 elif message.text:
                     # Handle text-only messages
@@ -803,13 +803,12 @@ async def forward_message_range(user_id, start_id, end_id=None):
                 
             try:
                 # Copy message without forward tag
-                if message.file:
-                    # Use message.file which works directly with send_file
+                if message.media:
+                    # Use message.media directly
                     await bot.send_file(
                         target,
-                        message.file,
-                        caption=message.text or "",
-                        force_document=message.document is not None
+                        message.media,
+                        caption=message.text or ""
                     )
                 elif message.text:
                     # Handle text-only messages
@@ -863,14 +862,13 @@ async def forward_files(user_id, file_count):
                 session.stop_forwarding = False
                 break
                 
-            if message.file and forwarded < file_count:
+            if message.media and forwarded < file_count:
                 try:
-                    # Use message.file which works directly with send_file
+                    # Use message.media directly
                     await bot.send_file(
                         target,
-                        message.file,
-                        caption=message.text or "",
-                        force_document=message.document is not None
+                        message.media,
+                        caption=message.text or ""
                     )
                     forwarded += 1
                     session.forward_count += 1
