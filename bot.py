@@ -207,16 +207,20 @@ async def main_menu(event):
     buttons = [
         [Button.inline("📤 Set Source Channel", b"set_source")],
         [Button.inline("📥 Set Target Channel", b"set_target")],
+        [Button.inline("📱 Set Phone Number", b"set_phone")],
         [Button.inline("⚙️ Forwarding Modes", b"modes")],
         [Button.inline("📊 Status", b"status")],
         [Button.inline("ℹ️ Help", b"help")]
     ]
     
-    await event.edit(
-        "**🤖 Telegram Forwarder Bot**\n\n"
-        "Choose an option:",
-        buttons=buttons
-    )
+    try:
+        await event.edit(
+            "**🤖 Telegram Forwarder Bot**\n\n"
+            "Choose an option:",
+            buttons=buttons
+        )
+    except Exception:
+        pass  # Ignore if message not modified
 
 @bot.on(events.CallbackQuery(pattern=b"set_source"))
 async def set_source(event):
@@ -254,7 +258,7 @@ async def set_phone(event):
     await event.answer()
     session = get_session(event.sender_id)
     
-    current_phone = session.user_phone or USER_PHONE or "Not set"
+    current_phone = session.user_phone or "Not set"
     has_session = "✅ Active" if session.session_string else "❌ Not authorized"
     
     buttons = [[Button.inline("🔑 Import Session String", b"import_session")]]
@@ -340,12 +344,15 @@ async def mode_send_all(event):
     
     await event.answer("⏳ Starting...")
     buttons = [[Button.inline("🔙 Back to Modes", b"modes")]]
-    await event.edit(
-        "**📦 Sending ALL Files & Messages**\n\n"
-        "⏳ Fetching all messages from source channel...\n"
-        "This may take a while depending on channel size.",
-        buttons=buttons
-    )
+    try:
+        await event.edit(
+            "**📦 Sending ALL Files & Messages**\n\n"
+            "⏳ Fetching all messages from source channel...\n"
+            "This may take a while depending on channel size.",
+            buttons=buttons
+        )
+    except Exception:
+        pass  # Ignore if message not modified
     
     session.mode = 'idle'
     await forward_all_messages(event.sender_id)
