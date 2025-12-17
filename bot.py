@@ -64,15 +64,17 @@ class UserSession:
         self.user_id = user_id
         self.source_channel = None
         self.target_channel = None
-        self.mode = 'idle'  # idle, live, selective
+        self.mode = 'idle'  # idle, live, selective, awaiting_phone
         self.forward_count = 0
+        self.user_phone = None
         
     def to_dict(self):
         return {
             'source_channel': self.source_channel,
             'target_channel': self.target_channel,
             'mode': self.mode,
-            'forward_count': self.forward_count
+            'forward_count': self.forward_count,
+            'user_phone': self.user_phone
         }
 
 def get_session(user_id):
@@ -85,6 +87,7 @@ def get_session(user_id):
             session.source_channel = user_config.get('source_channel')
             session.target_channel = user_config.get('target_channel')
             session.mode = user_config.get('mode', 'idle')
+            session.user_phone = user_config.get('user_phone')
         user_sessions[user_id] = session
     return user_sessions[user_id]
 
@@ -99,12 +102,24 @@ def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS or len(ADMIN_IDS) == 0
 
-async def get_client_for_fetching():
+async def get_client_for_fetching(user_id=None):
     """Get appropriate client for fetching messages"""
+    # Try to use user session phone if available
+    if user_id:
+        session = get_session(user_id)
+        if session.user_phone and user_client:
+            if not user_client.is_connected():
+                await user_client.connect()
+            if not await user_client.is_user_authorized():
+                await user_client.start(phone=session.user_phone)
+            return user_client
+    
+    # Fall back to environment USER_PHONE
     if user_client and not user_client.is_connected():
         await user_client.connect()
-        if not await user_client.is_user_authorized():
+        if not await user_client.is_user_authorized() and USER_PHONE:
             await user_client.start(phone=USER_PHONE)
+    
     return user_client if user_client else bot
 
 async def check_bot_permissions(channel_id, permission_type="source"):
@@ -133,24 +148,35 @@ async def start_handler(event):
     buttons = [
         [Button.inline("📤 Set Source Channel", b"set_source")],
         [Button.inline("📥 Set Target Channel", b"set_target")],
+        [Button.inline("📱 Set Phone Number", b"set_phone")],
         [Button.inline("⚙️ Forwarding Modes", b"modes")],
         [Button.inline("📊 Status", b"status")],
         [Button.inline("ℹ️ Help", b"help")]
     ]
     
-    # Show preset values if available
-    preset_info = ""
-    if session.source_channel or session.target_channel:
-        preset_info = "\n**📋 Saved Configuration:**\n"
-        if session.source_channel:
-            preset_info += f"📤 Source: `{session.source_channel}`\n"
-        if session.target_channel:
-            preset_info += f"📥 Target: `{session.target_channel}`\n"
+    # Build configuration display
+    config_display = "\n\n📋 **Current Configuration:**\n"
+    
+    if session.source_channel:
+        config_display += f"✅ Source: `{session.source_channel}`\n"
+    else:
+        config_display += f"❌ Source: Not set\n"
+    
+    if session.target_channel:
+        config_display += f"✅ Target: `{session.target_channel}`\n"
+    else:
+        config_display += f"❌ Target: Not set\n"
+    
+    if session.user_phone or USER_PHONE:
+        phone = session.user_phone or USER_PHONE
+        config_display += f"✅ Phone: `{phone}`\n"
+    else:
+        config_display += f"⚠️ Phone: Not set (needed for history)\n"
     
     await event.respond(
         "**🤖 Telegram Forwarder Bot**\n\n"
         "Welcome! I can forward messages from one channel to another."
-        f"{preset_info}\n"
+        f"{config_display}\n"
         "Choose an option below:",
         buttons=buttons
     )
@@ -201,6 +227,25 @@ async def set_target(event):
     )
     session = get_session(event.sender_id)
     session.mode = 'awaiting_target'
+
+@bot.on(events.CallbackQuery(pattern=b"set_phone"))
+async def set_phone(event):
+    """Prompt user to set phone number"""
+    await event.answer()
+    session = get_session(event.sender_id)
+    
+    current_phone = session.user_phone or USER_PHONE or "Not set"
+    
+    await event.respond(
+        "📱 **Set Phone Number**\n\n"
+        f"Current: `{current_phone}`\n\n"
+        "Please send your phone number with country code.\n"
+        "Examples:\n"
+        "• +1234567890\n"
+        "• +919876543210\n\n"
+        "⚠️ Note: Phone number is needed to fetch message history from channels."
+    )
+    session.mode = 'awaiting_phone'
 
 @bot.on(events.CallbackQuery(pattern=b"modes"))
 async def show_modes(event):
@@ -273,7 +318,7 @@ async def forward_all_messages(user_id):
     
     try:
         # Get appropriate client for fetching
-        fetch_client = await get_client_for_fetching()
+        fetch_client = await get_client_for_fetching(user_id)
         
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
@@ -379,8 +424,10 @@ async def show_status(event):
     """Show bot status"""
     session = get_session(event.sender_id)
     
-    source = session.source_channel if session.source_channel else "Not set"
-    target = session.target_channel if session.target_channel else "Not set"
+    source = session.source_channel if session.source_channel else "❌ Not set"
+    target = session.target_channel if session.target_channel else "❌ Not set"
+    phone = session.user_phone or USER_PHONE or "❌ Not set"
+    
     mode_text = {
         'idle': '⏸️ Stopped',
         'live': '🔴 Live Mode',
@@ -391,11 +438,12 @@ async def show_status(event):
     
     await event.edit(
         f"**📊 Bot Status**\n\n"
-        f"**Source Channel:** `{source}`\n"
-        f"**Target Channel:** `{target}`\n"
-        f"**Mode:** {mode_text}\n"
-        f"**Messages Forwarded:** {session.forward_count}\n"
-        f"**Bot Status:** ✅ Active",
+        f"📤 **Source Channel:** `{source}`\n"
+        f"📥 **Target Channel:** `{target}`\n"
+        f"📱 **Phone Number:** `{phone}`\n"
+        f"⚡ **Mode:** {mode_text}\n"
+        f"📊 **Messages Forwarded:** {session.forward_count}\n\n"
+        f"🟢 **Bot Status:** Active",
         buttons=buttons
     )
 
@@ -531,6 +579,30 @@ async def message_handler(event):
         except Exception as e:
             await event.respond(f"❌ Error: {str(e)}\nPlease send a valid number.")
         return
+    
+    # Handle phone number input
+    if session.mode == 'awaiting_phone':
+        try:
+            phone = event.message.text.strip()
+            
+            # Basic validation
+            if not phone.startswith('+') or not phone[1:].replace(' ', '').isdigit():
+                await event.respond("❌ Invalid phone number format. Please use format: +1234567890")
+                return
+            
+            session.user_phone = phone
+            save_session(event.sender_id)
+            session.mode = 'idle'
+            
+            await event.respond(
+                f"✅ Phone number set: `{phone}`\n\n"
+                "⚠️ Note: You need to authorize this number.\n"
+                "Next time you use 'Send ALL' mode, you'll receive an authorization code via Telegram.\n\n"
+                "Restart the bot to activate the user session."
+            )
+        except Exception as e:
+            await event.respond(f"❌ Error: {str(e)}\nPlease try again.")
+        return
 
 async def forward_message_range(user_id, start_id, end_id=None):
     """Forward messages in a range"""
@@ -538,7 +610,7 @@ async def forward_message_range(user_id, start_id, end_id=None):
     
     try:
         # Get appropriate client for fetching
-        fetch_client = await get_client_for_fetching()
+        fetch_client = await get_client_for_fetching(user_id)
         
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
@@ -580,7 +652,7 @@ async def forward_files(user_id, file_count):
     
     try:
         # Get appropriate client for fetching
-        fetch_client = await get_client_for_fetching()
+        fetch_client = await get_client_for_fetching(user_id)
         
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
