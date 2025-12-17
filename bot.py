@@ -804,11 +804,12 @@ async def forward_message_range(user_id, start_id, end_id=None):
             try:
                 # Copy message without forward tag
                 if message.media:
-                    # Use message.media directly
+                    # Pass the message itself to send_file - it handles media extraction
                     await bot.send_file(
                         target,
-                        message.media,
-                        caption=message.text or ""
+                        message,
+                        caption=message.text or "",
+                        force_document=getattr(message, 'document', None) is not None
                     )
                 elif message.text:
                     # Handle text-only messages
@@ -864,11 +865,12 @@ async def forward_files(user_id, file_count):
                 
             if message.media and forwarded < file_count:
                 try:
-                    # Use message.media directly
+                    # Pass the message itself to send_file - it handles media extraction
                     await bot.send_file(
                         target,
-                        message.media,
-                        caption=message.text or ""
+                        message,
+                        caption=message.text or "",
+                        force_document=getattr(message, 'document', None) is not None
                     )
                     forwarded += 1
                     session.forward_count += 1
