@@ -29,6 +29,8 @@ wheels/
 # Telegram session files
 *.session
 *.session-journal
+user_session.session
+user_session.session-journal
 
 # Config files
 config.json

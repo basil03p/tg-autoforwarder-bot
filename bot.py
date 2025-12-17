@@ -21,6 +21,10 @@ API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x]
 
+# Optional: User session for fetching messages (bypasses bot restrictions)
+USER_PHONE = os.environ.get('USER_PHONE')  # Optional: +1234567890
+USER_SESSION = os.environ.get('USER_SESSION', 'user_session')  # Session name
+
 # Data storage
 CONFIG_FILE = 'config.json'
 
@@ -42,8 +46,15 @@ def save_config(config):
     except Exception as e:
         logger.error(f"Error saving config: {e}")
 
-# Initialize bot
+# Initialize bot client
 bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+
+# Initialize user client (optional, for fetching messages)
+user_client = None
+if USER_PHONE:
+    user_client = TelegramClient(USER_SESSION, API_ID, API_HASH)
+else:
+    logger.warning("USER_PHONE not set. Message fetching will use bot (limited functionality).")
 
 # User sessions storage
 user_sessions = {}
@@ -87,6 +98,14 @@ def save_session(user_id):
 def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS or len(ADMIN_IDS) == 0
+
+async def get_client_for_fetching():
+    """Get appropriate client for fetching messages"""
+    if user_client and not user_client.is_connected():
+        await user_client.connect()
+        if not await user_client.is_user_authorized():
+            await user_client.start(phone=USER_PHONE)
+    return user_client if user_client else bot
 
 async def check_bot_permissions(channel_id, permission_type="source"):
     """Check if bot is admin in the channel"""
@@ -253,7 +272,10 @@ async def forward_all_messages(user_id):
     session = get_session(user_id)
     
     try:
-        source = await bot.get_entity(session.source_channel)
+        # Get appropriate client for fetching
+        fetch_client = await get_client_for_fetching()
+        
+        source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
         
         forwarded = 0
@@ -261,7 +283,7 @@ async def forward_all_messages(user_id):
         
         await bot.send_message(user_id, "📤 Starting to forward all messages...")
         
-        async for message in bot.iter_messages(source, reverse=True):
+        async for message in fetch_client.iter_messages(source, reverse=True):
             try:
                 # Copy message without forward tag
                 await bot.send_message(
@@ -515,11 +537,14 @@ async def forward_message_range(user_id, start_id, end_id=None):
     session = get_session(user_id)
     
     try:
-        source = await bot.get_entity(session.source_channel)
+        # Get appropriate client for fetching
+        fetch_client = await get_client_for_fetching()
+        
+        source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
         
         forwarded = 0
-        async for message in bot.iter_messages(source, min_id=start_id-1, max_id=end_id, reverse=True):
+        async for message in fetch_client.iter_messages(source, min_id=start_id-1, max_id=end_id, reverse=True):
             try:
                 # Copy message without forward tag
                 await bot.send_message(
@@ -554,11 +579,14 @@ async def forward_files(user_id, file_count):
     session = get_session(user_id)
     
     try:
-        source = await bot.get_entity(session.source_channel)
+        # Get appropriate client for fetching
+        fetch_client = await get_client_for_fetching()
+        
+        source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
         
         forwarded = 0
-        async for message in bot.iter_messages(source, reverse=True):
+        async for message in fetch_client.iter_messages(source, reverse=True):
             if message.media and forwarded < file_count:
                 try:
                     await bot.send_message(
@@ -638,6 +666,14 @@ async def start_web_server():
 async def main():
     """Start the bot and web server"""
     logger.info("Starting bot...")
+    
+    # Start user client if configured
+    if user_client:
+        await user_client.connect()
+        if not await user_client.is_user_authorized():
+            logger.info("User client not authorized. Starting authorization...")
+            await user_client.start(phone=USER_PHONE)
+        logger.info("User client connected and authorized")
     
     # Start health check server
     await start_web_server()
