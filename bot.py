@@ -1,6 +1,7 @@
 import os
 import asyncio
 from telethon import TelegramClient, events, Button
+from telethon.sessions import StringSession
 from telethon.tl.types import InputPeerChannel
 from telethon.errors import FloodWaitError, ChannelPrivateError
 import logging
@@ -56,9 +57,10 @@ class UserSession:
         self.user_id = user_id
         self.source_channel = None
         self.target_channel = None
-        self.mode = 'idle'  # idle, live, selective, awaiting_phone
+        self.mode = 'idle'  # idle, live, selective, awaiting_phone, awaiting_auth_code
         self.forward_count = 0
         self.user_phone = None
+        self.session_string = None  # Store session string
         
     def to_dict(self):
         return {
@@ -66,7 +68,8 @@ class UserSession:
             'target_channel': self.target_channel,
             'mode': self.mode,
             'forward_count': self.forward_count,
-            'user_phone': self.user_phone
+            'user_phone': self.user_phone,
+            'session_string': self.session_string
         }
 
 def get_session(user_id):
@@ -80,6 +83,7 @@ def get_session(user_id):
             session.target_channel = user_config.get('target_channel')
             session.mode = user_config.get('mode', 'idle')
             session.user_phone = user_config.get('user_phone')
+            session.session_string = user_config.get('session_string')
         user_sessions[user_id] = session
     return user_sessions[user_id]
 
@@ -110,10 +114,14 @@ async def get_client_for_fetching(user_id):
         )
         return None
     
-    # Create or get user client
+    # Create or get user client with StringSession
     if user_id not in user_clients:
-        session_name = f'user_session_{user_id}'
-        user_clients[user_id] = TelegramClient(session_name, API_ID, API_HASH)
+        session_str = session.session_string if session.session_string else ''
+        user_clients[user_id] = TelegramClient(
+            StringSession(session_str), 
+            API_ID, 
+            API_HASH
+        )
     
     client = user_clients[user_id]
     
@@ -247,17 +255,35 @@ async def set_phone(event):
     session = get_session(event.sender_id)
     
     current_phone = session.user_phone or USER_PHONE or "Not set"
+    has_session = "✅ Active" if session.session_string else "❌ Not authorized"
+    
+    buttons = [[Button.inline("🔑 Import Session String", b"import_session")]]
     
     await event.respond(
-        "📱 **Set Phone Number**\n\n"
-        f"Current: `{current_phone}`\n\n"
-        "Please send your phone number with country code.\n"
-        "Examples:\n"
-        "• +1234567890\n"
-        "• +919876543210\n\n"
-        "⚠️ Note: Phone number is needed to fetch message history from channels."
+        "📱 **Phone Number Setup**\n\n"
+        f"📞 Phone: `{current_phone}`\n"
+        f"🔐 Session: {has_session}\n\n"
+        "**To setup new session:**\n"
+        "Send your phone number with country code\n"
+        "Examples: +1234567890, +919876543210\n\n"
+        "**Or import existing session:**\n"
+        "Click button below to import session string",
+        buttons=buttons
     )
     session.mode = 'awaiting_phone'
+
+@bot.on(events.CallbackQuery(pattern=b"import_session"))
+async def import_session(event):
+    """Prompt user to import session string"""
+    await event.answer()
+    await event.respond(
+        "🔑 **Import Session String**\n\n"
+        "Please send your session string.\n\n"
+        "This is the string you received after authorization.\n"
+        "Format: Long alphanumeric string"
+    )
+    session = get_session(event.sender_id)
+    session.mode = 'awaiting_session_string'
 
 @bot.on(events.CallbackQuery(pattern=b"modes"))
 async def show_modes(event):
@@ -618,6 +644,46 @@ async def message_handler(event):
             await event.respond(f"❌ Error: {str(e)}\nPlease try again.")
         return
     
+    # Handle session string input
+    if session.mode == 'awaiting_session_string':
+        try:
+            session_str = event.message.text.strip()
+            
+            # Test the session string
+            test_client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+            await test_client.connect()
+            
+            if await test_client.is_user_authorized():
+                me = await test_client.get_me()
+                session.session_string = session_str
+                session.user_phone = me.phone
+                save_session(event.sender_id)
+                session.mode = 'idle'
+                
+                # Store in user_clients
+                user_clients[event.sender_id] = test_client
+                
+                await event.respond(
+                    "✅ **Session imported successfully!**\n\n"
+                    f"📞 Phone: `+{me.phone}`\n"
+                    f"👤 Name: {me.first_name}\n\n"
+                    "You can now use all forwarding features!"
+                )
+            else:
+                await test_client.disconnect()
+                await event.respond(
+                    "❌ Session string is invalid or expired.\n\n"
+                    "Please check your session string and try again."
+                )
+                session.mode = 'idle'
+        except Exception as e:
+            await event.respond(
+                f"❌ Error importing session: {str(e)}\n\n"
+                "Please make sure you're using a valid session string."
+            )
+            session.mode = 'idle'
+        return
+    
     # Handle authorization code input
     if session.mode == 'awaiting_auth_code':
         try:
@@ -631,13 +697,17 @@ async def message_handler(event):
             client = user_clients[event.sender_id]
             await client.sign_in(session.user_phone, code)
             
+            # Save session string
+            session.session_string = client.session.save()
             session.mode = 'idle'
             save_session(event.sender_id)
             
             await event.respond(
                 "✅ **Authorization successful!**\n\n"
-                "Your user session is now active.\n"
-                "You can now use all forwarding features!"
+                "🔐 Your session has been saved securely.\n"
+                "You can now use all forwarding features!\n\n"
+                f"🔑 Session String (save this!):\n`{session.session_string}`\n\n"
+                "💡 Keep this string safe - you can use it to restore your session."
             )
             
         except Exception as e:
