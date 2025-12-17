@@ -417,7 +417,7 @@ async def forward_all_messages(user_id):
                 
             try:
                 # Forward message (simple and reliable for all media types)
-                await fetch_client.forward_messages(target, message)
+                await bot.forward_messages(target, message.id, source)
                     
                 forwarded += 1
                 session.forward_count += 1
@@ -787,7 +787,7 @@ async def forward_message_range(user_id, start_id, end_id=None):
                 
             try:
                 # Forward message (simple and reliable for all media types)
-                await fetch_client.forward_messages(target, message)
+                await bot.forward_messages(target, message.id, source)
                     
                 forwarded += 1
                 session.forward_count += 1
@@ -835,7 +835,7 @@ async def forward_files(user_id, file_count):
             if message.media and forwarded < file_count:
                 try:
                     # Forward message (simple and reliable for all media types)
-                    await fetch_client.forward_messages(target, message)
+                    await bot.forward_messages(target, message.id, source)
                     forwarded += 1
                     session.forward_count += 1
                     
