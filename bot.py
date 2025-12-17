@@ -157,6 +157,36 @@ async def check_bot_permissions(channel_id, permission_type="source"):
     except Exception as e:
         return False, f"❌ Error checking permissions: {str(e)}"
 
+@bot.on(events.NewMessage(pattern='/fix'))
+async def fix_handler(event):
+    """Fix channel IDs by adding -100 prefix"""
+    if not is_admin(event.sender_id):
+        return
+    
+    session = get_session(event.sender_id)
+    fixed = []
+    
+    # Fix source if positive
+    if session.source_channel and session.source_channel > 0:
+        old = session.source_channel
+        session.source_channel = int(f"-100{old}")
+        fixed.append(f"Source: {old} → {session.source_channel}")
+    
+    # Fix target if positive
+    if session.target_channel and session.target_channel > 0:
+        old = session.target_channel
+        session.target_channel = int(f"-100{old}")
+        fixed.append(f"Target: {old} → {session.target_channel}")
+    
+    if fixed:
+        save_session(event.sender_id)
+        await event.respond(
+            "✅ **Fixed channel IDs:**\n\n" + "\n".join(fixed) + 
+            "\n\n✅ Your channels are now in the correct format!\nSend /start to continue."
+        )
+    else:
+        await event.respond("✅ Channel IDs are already correct!")
+
 @bot.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     """Handle /start command"""
