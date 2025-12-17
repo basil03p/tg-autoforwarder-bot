@@ -418,10 +418,10 @@ async def forward_all_messages(user_id):
             try:
                 # Copy message without forward tag
                 if message.media:
-                    # Use message.media directly for proper media handling
+                    # Pass the message itself to send_file - it handles media extraction
                     await bot.send_file(
                         target,
-                        message.media,
+                        message,
                         caption=message.text or "",
                         force_document=getattr(message, 'document', None) is not None
                     )
