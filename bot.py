@@ -21,10 +21,6 @@ API_HASH = os.environ.get('API_HASH')
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x]
 
-# Optional: User session for fetching messages (bypasses bot restrictions)
-USER_PHONE = os.environ.get('USER_PHONE')  # Optional: +1234567890
-USER_SESSION = os.environ.get('USER_SESSION', 'user_session')  # Session name
-
 # Data storage
 CONFIG_FILE = 'config.json'
 
@@ -49,12 +45,8 @@ def save_config(config):
 # Initialize bot client
 bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
-# Initialize user client (optional, for fetching messages)
-user_client = None
-if USER_PHONE:
-    user_client = TelegramClient(USER_SESSION, API_ID, API_HASH)
-else:
-    logger.warning("USER_PHONE not set. Message fetching will use bot (limited functionality).")
+# Initialize user client for fetching messages (created per user)
+user_clients = {}  # Store user clients per user_id
 
 # User sessions storage
 user_sessions = {}
@@ -102,25 +94,46 @@ def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS or len(ADMIN_IDS) == 0
 
-async def get_client_for_fetching(user_id=None):
+async def get_client_for_fetching(user_id):
     """Get appropriate client for fetching messages"""
-    # Try to use user session phone if available
-    if user_id:
-        session = get_session(user_id)
-        if session.user_phone and user_client:
-            if not user_client.is_connected():
-                await user_client.connect()
-            if not await user_client.is_user_authorized():
-                await user_client.start(phone=session.user_phone)
-            return user_client
+    session = get_session(user_id)
     
-    # Fall back to environment USER_PHONE
-    if user_client and not user_client.is_connected():
-        await user_client.connect()
-        if not await user_client.is_user_authorized() and USER_PHONE:
-            await user_client.start(phone=USER_PHONE)
+    # Check if user has set phone number
+    if not session.user_phone:
+        await bot.send_message(
+            user_id, 
+            "⚠️ **Phone number not set!**\n\n"
+            "To fetch message history, please:\n"
+            "1. Click 📱 Set Phone Number\n"
+            "2. Send your phone with country code\n\n"
+            "This is required to bypass Telegram bot limitations."
+        )
+        return None
     
-    return user_client if user_client else bot
+    # Create or get user client
+    if user_id not in user_clients:
+        session_name = f'user_session_{user_id}'
+        user_clients[user_id] = TelegramClient(session_name, API_ID, API_HASH)
+    
+    client = user_clients[user_id]
+    
+    # Connect and authorize if needed
+    if not client.is_connected():
+        await client.connect()
+    
+    if not await client.is_user_authorized():
+        await client.send_code_request(session.user_phone)
+        await bot.send_message(
+            user_id,
+            "📱 **Authorization Required**\n\n"
+            f"A code has been sent to: `{session.user_phone}`\n\n"
+            "Please send the code here (format: `12345`)"
+        )
+        session.mode = 'awaiting_auth_code'
+        save_session(user_id)
+        return None
+    
+    return client
 
 async def check_bot_permissions(channel_id, permission_type="source"):
     """Check if bot is admin in the channel"""
@@ -167,9 +180,8 @@ async def start_handler(event):
     else:
         config_display += f"❌ Target: Not set\n"
     
-    if session.user_phone or USER_PHONE:
-        phone = session.user_phone or USER_PHONE
-        config_display += f"✅ Phone: `{phone}`\n"
+    if session.user_phone:
+        config_display += f"✅ Phone: `{session.user_phone}`\n"
     else:
         config_display += f"⚠️ Phone: Not set (needed for history)\n"
     
@@ -320,6 +332,9 @@ async def forward_all_messages(user_id):
         # Get appropriate client for fetching
         fetch_client = await get_client_for_fetching(user_id)
         
+        if not fetch_client:
+            return  # Error message already sent
+        
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
         
@@ -426,7 +441,7 @@ async def show_status(event):
     
     source = session.source_channel if session.source_channel else "❌ Not set"
     target = session.target_channel if session.target_channel else "❌ Not set"
-    phone = session.user_phone or USER_PHONE or "❌ Not set"
+    phone = session.user_phone or "❌ Not set"
     
     mode_text = {
         'idle': '⏸️ Stopped',
@@ -596,12 +611,41 @@ async def message_handler(event):
             
             await event.respond(
                 f"✅ Phone number set: `{phone}`\n\n"
-                "⚠️ Note: You need to authorize this number.\n"
-                "Next time you use 'Send ALL' mode, you'll receive an authorization code via Telegram.\n\n"
-                "Restart the bot to activate the user session."
+                "When you use forwarding features, you'll receive a verification code via Telegram.\n"
+                "Just send it to the bot to authorize!"
             )
         except Exception as e:
             await event.respond(f"❌ Error: {str(e)}\nPlease try again.")
+        return
+    
+    # Handle authorization code input
+    if session.mode == 'awaiting_auth_code':
+        try:
+            code = event.message.text.strip().replace(' ', '').replace('-', '')
+            
+            if event.sender_id not in user_clients:
+                await event.respond("❌ Session expired. Please try the operation again.")
+                session.mode = 'idle'
+                return
+            
+            client = user_clients[event.sender_id]
+            await client.sign_in(session.user_phone, code)
+            
+            session.mode = 'idle'
+            save_session(event.sender_id)
+            
+            await event.respond(
+                "✅ **Authorization successful!**\n\n"
+                "Your user session is now active.\n"
+                "You can now use all forwarding features!"
+            )
+            
+        except Exception as e:
+            await event.respond(
+                f"❌ Authorization failed: {str(e)}\n\n"
+                "Please try again or check your code."
+            )
+            session.mode = 'idle'
         return
 
 async def forward_message_range(user_id, start_id, end_id=None):
@@ -611,6 +655,9 @@ async def forward_message_range(user_id, start_id, end_id=None):
     try:
         # Get appropriate client for fetching
         fetch_client = await get_client_for_fetching(user_id)
+        
+        if not fetch_client:
+            return  # Error message already sent
         
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
@@ -653,6 +700,9 @@ async def forward_files(user_id, file_count):
     try:
         # Get appropriate client for fetching
         fetch_client = await get_client_for_fetching(user_id)
+        
+        if not fetch_client:
+            return  # Error message already sent
         
         source = await fetch_client.get_entity(session.source_channel)
         target = await bot.get_entity(session.target_channel)
@@ -738,14 +788,6 @@ async def start_web_server():
 async def main():
     """Start the bot and web server"""
     logger.info("Starting bot...")
-    
-    # Start user client if configured
-    if user_client:
-        await user_client.connect()
-        if not await user_client.is_user_authorized():
-            logger.info("User client not authorized. Starting authorization...")
-            await user_client.start(phone=USER_PHONE)
-        logger.info("User client connected and authorized")
     
     # Start health check server
     await start_web_server()
