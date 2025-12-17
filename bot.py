@@ -61,6 +61,7 @@ class UserSession:
         self.forward_count = 0
         self.user_phone = None
         self.session_string = None  # Store session string
+        self.stop_forwarding = False  # Flag to stop ongoing forwarding
         
     def to_dict(self):
         return {
@@ -390,6 +391,7 @@ async def mode_send_all(event):
 async def forward_all_messages(user_id):
     """Forward all messages from source to target"""
     session = get_session(user_id)
+    session.stop_forwarding = False  # Reset stop flag
     
     try:
         # Get appropriate client for fetching
@@ -407,6 +409,12 @@ async def forward_all_messages(user_id):
         await bot.send_message(user_id, "📤 Starting to forward all messages...")
         
         async for message in fetch_client.iter_messages(source, reverse=True):
+            # Check if user wants to stop
+            if session.stop_forwarding:
+                await bot.send_message(user_id, "⏸️ Forwarding stopped by user!")
+                session.stop_forwarding = False
+                break
+                
             try:
                 # Copy message without forward tag
                 if message.media:
@@ -499,15 +507,19 @@ async def mode_stop(event):
     """Stop forwarding"""
     session = get_session(event.sender_id)
     session.mode = 'idle'
+    session.stop_forwarding = True  # Signal to stop ongoing forwarding
     save_session(event.sender_id)
     
-    await event.answer("⏸️ Forwarding stopped!")
+    await event.answer("⏸️ Stopping forwarding...")
     buttons = [[Button.inline("🔙 Back to Modes", b"modes")]]
-    await event.edit(
-        "**⏸️ Forwarding Stopped**\n\n"
-        "No messages will be forwarded.",
-        buttons=buttons
-    )
+    try:
+        await event.edit(
+            "**⏸️ Forwarding Stopped**\n\n"
+            "Ongoing forwarding will stop at the next message.",
+            buttons=buttons
+        )
+    except Exception:
+        pass
 
 @bot.on(events.CallbackQuery(pattern=b"status"))
 async def show_status(event):
@@ -770,6 +782,7 @@ async def message_handler(event):
 async def forward_message_range(user_id, start_id, end_id=None):
     """Forward messages in a range"""
     session = get_session(user_id)
+    session.stop_forwarding = False  # Reset stop flag
     
     try:
         # Get appropriate client for fetching
@@ -783,6 +796,12 @@ async def forward_message_range(user_id, start_id, end_id=None):
         
         forwarded = 0
         async for message in fetch_client.iter_messages(source, min_id=start_id-1, max_id=end_id, reverse=True):
+            # Check if user wants to stop
+            if session.stop_forwarding:
+                await bot.send_message(user_id, "⏸️ Forwarding stopped by user!")
+                session.stop_forwarding = False
+                break
+                
             try:
                 # Copy message without forward tag
                 if message.media:
@@ -826,6 +845,7 @@ async def forward_message_range(user_id, start_id, end_id=None):
 async def forward_files(user_id, file_count):
     """Forward specific number of files"""
     session = get_session(user_id)
+    session.stop_forwarding = False  # Reset stop flag
     
     try:
         # Get appropriate client for fetching
@@ -839,6 +859,12 @@ async def forward_files(user_id, file_count):
         
         forwarded = 0
         async for message in fetch_client.iter_messages(source, reverse=True):
+            # Check if user wants to stop
+            if session.stop_forwarding:
+                await bot.send_message(user_id, "⏸️ Forwarding stopped by user!")
+                session.stop_forwarding = False
+                break
+                
             if message.media and forwarded < file_count:
                 try:
                     # Send media file
