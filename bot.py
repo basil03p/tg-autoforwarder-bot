@@ -43,11 +43,24 @@ def save_config(config):
     except Exception as e:
         logger.error(f"Error saving config: {e}")
 
-# Initialize bot client
-bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Initialize bot client with flood wait handling
+async def init_bot():
+    """Initialize bot with flood wait handling"""
+    client = TelegramClient('bot', API_ID, API_HASH)
+    while True:
+        try:
+            await client.start(bot_token=BOT_TOKEN)
+            return client
+        except FloodWaitError as e:
+            logger.warning(f"FloodWaitError: Waiting {e.seconds} seconds before retry...")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logger.error(f"Error initializing bot: {e}")
+            await asyncio.sleep(5)
 
 # Initialize user client for fetching messages (created per user)
 user_clients = {}  # Store user clients per user_id
+bot = None  # Will be initialized in main()
 
 # User sessions storage
 user_sessions = {}
@@ -864,7 +877,12 @@ async def start_web_server():
 
 async def main():
     """Start the bot and web server"""
+    global bot
+    
     logger.info("Starting bot...")
+    
+    # Initialize bot with flood wait handling
+    bot = await init_bot()
     
     # Start health check server
     await start_web_server()
@@ -873,4 +891,4 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    bot.loop.run_until_complete(main())
+    asyncio.run(main())
