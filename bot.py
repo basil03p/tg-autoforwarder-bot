@@ -417,20 +417,19 @@ async def forward_all_messages(user_id):
                 
             try:
                 # Copy message without forward tag
-                if message.media:
-                    # Handle media messages (photos, videos, documents, audio, etc.)
+                if message.file:
+                    # Use message.file which works directly with send_file
                     await bot.send_file(
                         target,
-                        message.media,
-                        caption=message.text or message.message or "",
-                        formatting_entities=message.entities
+                        message.file,
+                        caption=message.text or "",
+                        force_document=message.document is not None
                     )
                 elif message.text:
                     # Handle text-only messages
                     await bot.send_message(
                         target,
-                        message.text,
-                        formatting_entities=message.entities
+                        message.text
                     )
                 else:
                     # Skip empty messages
@@ -804,20 +803,19 @@ async def forward_message_range(user_id, start_id, end_id=None):
                 
             try:
                 # Copy message without forward tag
-                if message.media:
-                    # Handle media messages
+                if message.file:
+                    # Use message.file which works directly with send_file
                     await bot.send_file(
                         target,
-                        message.media,
-                        caption=message.text or message.message or "",
-                        formatting_entities=message.entities
+                        message.file,
+                        caption=message.text or "",
+                        force_document=message.document is not None
                     )
                 elif message.text:
                     # Handle text-only messages
                     await bot.send_message(
                         target,
-                        message.text,
-                        formatting_entities=message.entities
+                        message.text
                     )
                 else:
                     continue
@@ -865,14 +863,14 @@ async def forward_files(user_id, file_count):
                 session.stop_forwarding = False
                 break
                 
-            if message.media and forwarded < file_count:
+            if message.file and forwarded < file_count:
                 try:
-                    # Send media file
+                    # Use message.file which works directly with send_file
                     await bot.send_file(
                         target,
-                        message.media,
-                        caption=message.text or message.message or "",
-                        formatting_entities=message.entities
+                        message.file,
+                        caption=message.text or "",
+                        force_document=message.document is not None
                     )
                     forwarded += 1
                     session.forward_count += 1
