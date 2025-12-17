@@ -6,6 +6,7 @@ from telethon.errors import FloodWaitError, ChannelPrivateError
 import logging
 import json
 from datetime import datetime
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(
@@ -315,10 +316,14 @@ async def message_handler(event):
     # Handle setting source channel
     if session.mode == 'awaiting_source':
         try:
-            channel_input = event.message.text
+            channel_input = event.message.text.strip()
             if event.message.forward:
                 channel = await bot.get_entity(event.message.forward.chat)
                 channel_input = channel.id
+            
+            # Convert string IDs to integers
+            if isinstance(channel_input, str) and channel_input.lstrip('-').isdigit():
+                channel_input = int(channel_input)
             
             entity = await bot.get_entity(channel_input)
             session.source_channel = entity.id if hasattr(entity, 'id') else channel_input
@@ -333,10 +338,14 @@ async def message_handler(event):
     # Handle setting target channel
     if session.mode == 'awaiting_target':
         try:
-            channel_input = event.message.text
+            channel_input = event.message.text.strip()
             if event.message.forward:
                 channel = await bot.get_entity(event.message.forward.chat)
                 channel_input = channel.id
+            
+            # Convert string IDs to integers
+            if isinstance(channel_input, str) and channel_input.lstrip('-').isdigit():
+                channel_input = int(channel_input)
             
             entity = await bot.get_entity(channel_input)
             session.target_channel = entity.id if hasattr(entity, 'id') else channel_input
@@ -496,8 +505,28 @@ async def live_forward_handler(event):
                 logger.error(f"Error in live forward: {e}")
                 continue
 
+async def health_check(request):
+    """Health check endpoint for Koyeb"""
+    return web.Response(text="OK", status=200)
+
+async def start_web_server():
+    """Start HTTP server for health checks"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    logger.info("Health check server started on port 8000")
+
 async def main():
-    """Start the bot"""
+    """Start the bot and web server"""
+    logger.info("Starting bot...")
+    
+    # Start health check server
+    await start_web_server()
+    
     logger.info("Bot started!")
     await bot.run_until_disconnected()
 
